@@ -6,6 +6,8 @@
 
 export LC_ALL=C.UTF-8
 
+set -ex
+
 CFG_DONE="ci.base-install-done"  # Use a global git setting to remember whether this script ran to avoid running it twice
 
 if [ "$(git config --global ${CFG_DONE})" == "true" ]; then
@@ -18,17 +20,9 @@ if [ -n "$DPKG_ADD_ARCH" ]; then
 fi
 
 if [[ $CI_IMAGE_NAME_TAG == *centos* ]]; then
-  ${CI_RETRY_EXE} bash -c "dnf -y install epel-release"
-  ${CI_RETRY_EXE} bash -c "dnf -y --allowerasing install $CI_BASE_PACKAGES $PACKAGES"
+  bash -c "dnf -y install epel-release"
+  bash -c "dnf -y --allowerasing install $CI_BASE_PACKAGES $PACKAGES"
 elif [ "$CI_USE_APT_INSTALL" != "no" ]; then
-  if [[ "${ADD_UNTRUSTED_BPFCC_PPA}" == "true" ]]; then
-    # Ubuntu 22.04 LTS and Debian 11 both have an outdated bpfcc-tools packages.
-    # The iovisor PPA is outdated as well. The next Ubuntu and Debian releases will contain updated
-    # packages. Meanwhile, use an untrusted PPA to install an up-to-date version of the bpfcc-tools
-    # package.
-    # TODO: drop this once we can use newer images in GCE
-    add-apt-repository ppa:hadret/bpfcc
-  fi
   if [[ -n "${APPEND_APT_SOURCES_LIST}" ]]; then
     echo "${APPEND_APT_SOURCES_LIST}" >> /etc/apt/sources.list
   fi
@@ -48,17 +42,39 @@ if [ -n "$PIP_PACKAGES" ]; then
 fi
 
 if [[ ${USE_MEMORY_SANITIZER} == "true" ]]; then
-  update-alternatives --install /usr/bin/clang++ clang++ "$(which clang++-16)" 100
-  update-alternatives --install /usr/bin/clang clang "$(which clang-16)" 100
-  git clone --depth=1 https://github.com/llvm/llvm-project -b llvmorg-16.0.1 "${BASE_SCRATCH_DIR}"/msan/llvm-project
-  cmake -B "${BASE_SCRATCH_DIR}"/msan/build/ -DLLVM_ENABLE_RUNTIMES='libcxx;libcxxabi' -DCMAKE_BUILD_TYPE=Release -DLLVM_USE_SANITIZER=MemoryWithOrigins -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DLLVM_TARGETS_TO_BUILD=X86 -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF -S "${BASE_SCRATCH_DIR}"/msan/llvm-project/runtimes
-  make -C "${BASE_SCRATCH_DIR}"/msan/build/ "$MAKEJOBS"
+  git clone --depth=1 https://github.com/llvm/llvm-project -b llvmorg-16.0.6 "${BASE_SCRATCH_DIR}"/msan/llvm-project
+
+  cmake -G Ninja -B "${BASE_SCRATCH_DIR}"/msan/clang_build/ -DLLVM_ENABLE_PROJECTS="clang" \
+                                                            -DCMAKE_BUILD_TYPE=Release \
+                                                            -DLLVM_TARGETS_TO_BUILD=Native \
+                                                            -DLLVM_ENABLE_RUNTIMES="compiler-rt;libcxx;libcxxabi;libunwind" \
+                                                            -S "${BASE_SCRATCH_DIR}"/msan/llvm-project/llvm
+
+  ninja -C "${BASE_SCRATCH_DIR}"/msan/clang_build/ "$MAKEJOBS"
+  ninja -C "${BASE_SCRATCH_DIR}"/msan/clang_build/ install-runtimes
+
+  update-alternatives --install /usr/bin/clang++ clang++ "${BASE_SCRATCH_DIR}"/msan/clang_build/bin/clang++ 100
+  update-alternatives --install /usr/bin/clang clang "${BASE_SCRATCH_DIR}"/msan/clang_build/bin/clang 100
+  update-alternatives --install /usr/bin/llvm-symbolizer llvm-symbolizer "${BASE_SCRATCH_DIR}"/msan/clang_build/bin/llvm-symbolizer 100
+
+  cmake -G Ninja -B "${BASE_SCRATCH_DIR}"/msan/cxx_build/ -DLLVM_ENABLE_RUNTIMES='libcxx;libcxxabi' \
+                                                          -DCMAKE_BUILD_TYPE=Release \
+                                                          -DLLVM_USE_SANITIZER=MemoryWithOrigins \
+                                                          -DCMAKE_C_COMPILER=clang \
+                                                          -DCMAKE_CXX_COMPILER=clang++ \
+                                                          -DLLVM_TARGETS_TO_BUILD=Native \
+                                                          -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF \
+                                                          -DLIBCXX_ENABLE_DEBUG_MODE=ON \
+                                                          -DLIBCXX_ENABLE_ASSERTIONS=ON \
+                                                          -S "${BASE_SCRATCH_DIR}"/msan/llvm-project/runtimes
+
+  ninja -C "${BASE_SCRATCH_DIR}"/msan/cxx_build/ "$MAKEJOBS"
 fi
 
 if [[ "${RUN_TIDY}" == "true" ]]; then
-  git clone --depth=1 https://github.com/include-what-you-use/include-what-you-use -b clang_16 "${DIR_IWYU}"/include-what-you-use
-  cmake -B "${DIR_IWYU}"/build/ -G 'Unix Makefiles' -DCMAKE_PREFIX_PATH=/usr/lib/llvm-16 -S "${DIR_IWYU}"/include-what-you-use
-  make -C "${DIR_IWYU}"/build/ install "$MAKEJOBS"
+  git clone --depth=1 https://github.com/include-what-you-use/include-what-you-use -b clang_16 /include-what-you-use
+  cmake -B /iwyu-build/ -G 'Unix Makefiles' -DCMAKE_PREFIX_PATH=/usr/lib/llvm-16 -S /include-what-you-use
+  make -C /iwyu-build/ install "$MAKEJOBS"
 fi
 
 mkdir -p "${DEPENDS_DIR}/SDKs" "${DEPENDS_DIR}/sdk-sources"

@@ -5,6 +5,7 @@
 
 #include <chain.h>
 #include <chainparams.h>
+#include <common/system.h>
 #include <consensus/amount.h>
 #include <consensus/consensus.h>
 #include <consensus/merkle.h>
@@ -32,7 +33,6 @@
 #include <univalue.h>
 #include <util/strencodings.h>
 #include <util/string.h>
-#include <util/system.h>
 #include <util/translation.h>
 #include <validation.h>
 #include <validationinterface.h>
@@ -435,7 +435,7 @@ static RPCHelpMan getmininginfo()
     obj.pushKV("difficulty",       (double)GetDifficulty(active_chain.Tip()));
     obj.pushKV("networkhashps",    getnetworkhashps().HandleRequest(request));
     obj.pushKV("pooledtx",         (uint64_t)mempool.size());
-    obj.pushKV("chain", chainman.GetParams().NetworkIDString());
+    obj.pushKV("chain", chainman.GetParams().GetChainTypeString());
     obj.pushKV("warnings",         GetWarnings(false).original);
     return obj;
 },
@@ -477,6 +477,40 @@ static RPCHelpMan prioritisetransaction()
     EnsureAnyMemPool(request.context).PrioritiseTransaction(hash, nAmount);
     return true;
 },
+    };
+}
+
+static RPCHelpMan getprioritisedtransactions()
+{
+    return RPCHelpMan{"getprioritisedtransactions",
+        "Returns a map of all user-created (see prioritisetransaction) fee deltas by txid, and whether the tx is present in mempool.",
+        {},
+        RPCResult{
+            RPCResult::Type::OBJ_DYN, "prioritisation-map", "prioritisation keyed by txid",
+            {
+                {RPCResult::Type::OBJ, "txid", "", {
+                    {RPCResult::Type::NUM, "fee_delta", "transaction fee delta in satoshis"},
+                    {RPCResult::Type::BOOL, "in_mempool", "whether this transaction is currently in mempool"},
+                }}
+            },
+        },
+        RPCExamples{
+            HelpExampleCli("getprioritisedtransactions", "")
+            + HelpExampleRpc("getprioritisedtransactions", "")
+        },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        {
+            NodeContext& node = EnsureAnyNodeContext(request.context);
+            CTxMemPool& mempool = EnsureMemPool(node);
+            UniValue rpc_result{UniValue::VOBJ};
+            for (const auto& delta_info : mempool.GetPrioritisedTransactions()) {
+                UniValue result_inner{UniValue::VOBJ};
+                result_inner.pushKV("fee_delta", delta_info.delta);
+                result_inner.pushKV("in_mempool", delta_info.in_mempool);
+                rpc_result.pushKV(delta_info.txid.GetHex(), result_inner);
+            }
+            return rpc_result;
+        },
     };
 }
 
@@ -532,6 +566,8 @@ static RPCHelpMan getblocktemplate()
                     {"segwit", RPCArg::Type::STR, RPCArg::Optional::NO, "(literal) indicates client side segwit support"},
                     {"str", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "other client side supported softfork deployment"},
                 }},
+                {"longpollid", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "delay processing request until the result would vary significantly from the \"longpollid\" of a prior template"},
+                {"data", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED, "proposed block data to check, encoded in hexadecimal; valid only for mode=\"proposal\""},
             },
             RPCArgOptions{.oneline_description="\"template_request\""}},
         },
@@ -612,7 +648,7 @@ static RPCHelpMan getblocktemplate()
     if (!request.params[0].isNull())
     {
         const UniValue& oparam = request.params[0].get_obj();
-        const UniValue& modeval = find_value(oparam, "mode");
+        const UniValue& modeval = oparam.find_value("mode");
         if (modeval.isStr())
             strMode = modeval.get_str();
         else if (modeval.isNull())
@@ -621,11 +657,11 @@ static RPCHelpMan getblocktemplate()
         }
         else
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid mode");
-        lpval = find_value(oparam, "longpollid");
+        lpval = oparam.find_value("longpollid");
 
         if (strMode == "proposal")
         {
-            const UniValue& dataval = find_value(oparam, "data");
+            const UniValue& dataval = oparam.find_value("data");
             if (!dataval.isStr())
                 throw JSONRPCError(RPC_TYPE_ERROR, "Missing data String key for proposal");
 
@@ -652,7 +688,7 @@ static RPCHelpMan getblocktemplate()
             return BIP22ValidationResult(state);
         }
 
-        const UniValue& aClientRules = find_value(oparam, "rules");
+        const UniValue& aClientRules = oparam.find_value("rules");
         if (aClientRules.isArray()) {
             for (unsigned int i = 0; i < aClientRules.size(); ++i) {
                 const UniValue& v = aClientRules[i];
@@ -1048,6 +1084,7 @@ void RegisterMiningRPCCommands(CRPCTable& t)
         {"mining", &getnetworkhashps},
         {"mining", &getmininginfo},
         {"mining", &prioritisetransaction},
+        {"mining", &getprioritisedtransactions},
         {"mining", &getblocktemplate},
         {"mining", &submitblock},
         {"mining", &submitheader},

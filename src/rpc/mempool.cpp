@@ -351,8 +351,8 @@ UniValue MempoolToJSON(const CTxMemPool& pool, bool verbose, bool include_mempoo
             entryToJSON(pool, info, e);
             // Mempool has unique entries so there is no advantage in using
             // UniValue::pushKV, which checks if the key already exists in O(N).
-            // UniValue::__pushKV is used instead which currently is O(1).
-            o.__pushKV(hash.ToString(), info);
+            // UniValue::pushKVEnd is used instead which currently is O(1).
+            o.pushKVEnd(hash.ToString(), info);
         }
         return o;
     } else {
@@ -638,7 +638,7 @@ static RPCHelpMan gettxspendingprevout()
                                 }, /*fAllowNull=*/false, /*fStrict=*/true);
 
                 const uint256 txid(ParseHashO(o, "txid"));
-                const int nOutput{find_value(o, "vout").getInt<int>()};
+                const int nOutput{o.find_value("vout").getInt<int>()};
                 if (nOutput < 0) {
                     throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, vout cannot be negative");
                 }
